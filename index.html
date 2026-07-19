@@ -26,7 +26,7 @@ body {
   cursor:pointer; transition:background .15s,border-color .15s;
 }
 #drop.active { background:rgba(15,118,110,.16); border-color:var(--teal); }
-#dropTitle { color:#101828; font-size:16px; font-weight:700; }
+#dropTitle { color:#101828; font-size:16px; font-weight:700; white-space:pre-line; }
 #dropPath { color:#344054; font-size:12px; word-break:break-all; }
 #status { color:#344054; font-size:12px; min-height:16px; }
 #run {
@@ -38,6 +38,27 @@ body {
 #run:disabled { background:#D6DCE4; border-color:#D6DCE4; color:#667085; cursor:default; }
 #bar { background:#DCE3EA; height:6px; }
 #fill { background:var(--teal); height:6px; width:0%; transition:width .15s; }
+#settings { border:1px solid #DCE3EA; background:#FFFFFF; padding:16px 18px 6px; display:flex; flex-direction:column; }
+#settingsHead { display:flex; justify-content:space-between; align-items:center; padding-bottom:12px; border-bottom:1px solid #EEF2F6; }
+#settingsTitle { color:#101828; font-size:13px; font-weight:700; letter-spacing:.02em; }
+#reset { background:none; border:none; padding:2px; cursor:pointer; width:24px; height:24px; opacity:.65; transition:opacity .15s; }
+#reset:hover { opacity:1; }
+#reset img { width:20px; height:20px; display:block; }
+.row { display:flex; align-items:center; gap:14px; min-height:42px; border-bottom:1px solid #EEF2F6; }
+.row:last-child { border-bottom:none; }
+.row label { color:#344054; font-size:12px; min-width:185px; flex-shrink:0; }
+.row input[type=range] { flex:1; accent-color:var(--teal); height:4px; }
+.row select { border:1px solid #B8C4D0; color:#344054; font-size:12px; padding:4px 8px; background:#FFFFFF; cursor:pointer; }
+.row select:hover { border-color:var(--teal); }
+.row input[type=checkbox] { width:16px; height:16px; accent-color:var(--teal); cursor:pointer; }
+.row .val { color:#101828; font-size:12px; font-weight:700; min-width:30px; text-align:right; font-variant-numeric:tabular-nums; }
+.mouthBlock { padding:10px 0 12px; border-bottom:1px solid #EEF2F6; }
+.mouthBlock > label { display:block; color:#344054; font-size:12px; margin-bottom:8px; }
+.mouthRow { display:flex; gap:14px; flex-wrap:wrap; }
+.mouthItem { display:flex; flex-direction:column; align-items:center; gap:3px; flex:1; min-width:56px; }
+.mouthItem span:first-child { color:#344054; font-size:12px; }
+.mouthItem span:last-child { color:#101828; font-size:11px; font-weight:700; font-variant-numeric:tabular-nums; }
+.mouthItem input[type=range] { width:100%; accent-color:var(--teal); height:4px; }
 #credit { color:#667085; font-size:11px; }
 #engine { color:#667085; font-size:11px; min-height:14px; }
 #credit a { color:var(--teal); }
@@ -55,10 +76,24 @@ input[type=file] { display:none; }
   <button id="run" disabled></button>
   <div id="bar"><div id="fill"></div></div>
   <div id="engine"></div>
-  <div id="credit">Model: <a href="https://huggingface.co/TylorShine/wavlm-base-plus-hiragana-ctc-v2" target="_blank" rel="noopener">wavlm-base-plus-hiragana-ctc-v2</a> (CC BY-SA 3.0)</div>
+  <div id="settings">
+    <div id="settingsHead">
+      <div id="settingsTitle"></div>
+      <button id="reset"><img src="img/reset_settings.svg"></button>
+    </div>
+    <div class="mouthBlock">
+      <label id="mouthLabel"></label>
+      <div class="mouthRow" id="mouthRow"></div>
+    </div>
+    <div class="row"><label id="leadLabel"></label><input type="range" id="lead" min="-30" max="30" step="1"><span class="val" id="leadVal"></span></div>
+    <div class="row"><label id="shapesLabel"></label><input type="range" id="shapes" min="1" max="6" step="1"><span class="val" id="shapesVal"></span></div>
+    <div class="row"><label id="intervalLabel"></label><select id="interval"><option value="10">10</option><option value="15">15</option><option value="30">30</option></select></div>
+    <div class="row"><label id="eyeLabel"></label><input type="checkbox" id="eye"></div>
+  </div>
+  <div id="credit">Model: <a href="https://huggingface.co/TylorShine/wavlm-base-plus-hiragana-ctc-v2" target="_blank" rel="noopener">wavlm-base-plus-hiragana-ctc-v2</a> (CC BY-SA 3.0)<br>Eye Animation: <a href="https://booth.pm/ja/items/6123352" target="_blank" rel="noopener">「何もしない」まばたき＆呼吸モーション</a> かんな@MMD</div>
   <input type="file" id="picker" accept=".wav,.mp3,audio/wav,audio/mpeg">
 </div>
-<script src="config.js?v=4"></script>
+<script src="config.js?v=6"></script>
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.webgpu.min.js"></script>
 <script>
 "use strict";
@@ -71,35 +106,73 @@ const MORPH_CP932 = { "\u3042":[0x82,0xa0], "\u3044":[0x82,0xa2], "\u3046":[0x82
 const VOWELS = { a:"\u3042", A:"\u3042", i:"\u3044", I:"\u3044", u:"\u3046", U:"\u3046", e:"\u3048", E:"\u3048", o:"\u304a", O:"\u304a", N:"\u3093" };
 const CLOSERS = new Set(["p","py","b","by","m","my","pau"]);
 const DOMINANT_RATIO = 0.40;
-const MAX_ACTIVE_MORPHS = 2;
 const RELEASE_DECAY = 0.45;
-const LEAD_FRAMES = 5;
 const KEY_TOLERANCE = 0.01;
 const CHUNK_SAMPLES = 14 * RATE;
 const OVERLAP_SAMPLES = RATE;
 const STEP_SAMPLES = CHUNK_SAMPLES - OVERLAP_SAMPLES;
 const MODEL_PARTS = window.MODEL_SOURCES;
+const DEFAULTS = { scales: [1, 1, 1, 1, 1, 0.5], lead: 5, shapes: 2, interval: 30, eye: false };
+const EYE_PERIOD = 220;
+const EYE_MORPHS = [
+  { name: [0x82,0xdc,0x82,0xce,0x82,0xbd,0x82,0xab], keys: [[0,0.07],[21,0.07],[23,0.15],[25,0.1],[37,0.07],[38,0.66],[40,1.0],[41,0.65],[43,0.0],[44,0.07],[46,1.0],[47,0.65],[48,0.13],[75,0.13],[77,0.15],[82,0.15],[96,0.15],[98,0.0],[100,0.08],[110,0.08],[112,0.13],[114,0.0],[116,0.08],[121,0.08],[140,0.07],[141,0.66],[143,1.0],[144,0.65],[146,0.0],[147,0.07],[220,0.07]] },
+  { name: [0x89,0xba], keys: [[0,0.05],[21,0.05],[23,0.1],[25,0.05],[37,0.05],[39,0.22],[41,0.31],[43,0.0],[44,0.11],[46,0.25],[48,0.06],[75,0.06],[82,0.13],[97,0.13],[100,0.06],[110,0.06],[112,0.2],[114,0.2],[116,0.06],[140,0.05],[142,0.22],[144,0.31],[146,0.0],[147,0.11],[158,0.06],[160,0.1],[180,0.1],[182,0.07],[220,0.05]] },
+];
+const EYE_BONE_NAME = [0x97,0xbc,0x96,0xda];
+const EYE_BONE_KEYS = [
+  [0,[0.0,0.0,0.0],[0.0,-0.042987,0.0,0.999076],"14140000141414146b6b6b6b6b6b6b6b141414141414146b6b6b6b6b6b6b6b001414141414146b6b6b6b6b6b6b6b000014141414146b6b6b6b6b6b6b6b000000"],
+  [4,[0.0,0.0,0.0],[0.0,-0.041988,0.0,0.999119],"14140000141414146b6b6b6b6b6b6b6b141414141414146b6b6b6b6b6b6b6b001414141414146b6b6b6b6b6b6b6b000014141414146b6b6b6b6b6b6b6b000000"],
+  [6,[0.0,0.0,0.0],[0.0,-0.003,0.0,0.999997],"14140000141414146b6b6b6b6b6b6b6b141414141414146b6b6b6b6b6b6b6b001414141414146b6b6b6b6b6b6b6b000014141414146b6b6b6b6b6b6b6b000000"],
+  [20,[0.0,0.0,0.0],[0.0,-0.003,0.0,0.999997],"14140000141414146b6b6b6b6b6b6b6b141414141414146b6b6b6b6b6b6b6b001414141414146b6b6b6b6b6b6b6b000014141414146b6b6b6b6b6b6b6b000000"],
+  [23,[0.0,0.0,0.0],[0.0,0.006,0.0,0.999983],"14140000141414146b6b6b6b6b6b6b6b141414141414146b6b6b6b6b6b6b6b001414141414146b6b6b6b6b6b6b6b000014141414146b6b6b6b6b6b6b6b000000"],
+  [26,[0.0,0.0,0.0],[0.0,-0.0095,0.0,0.999956],"14140000141414146b6b6b6b6b6b6b6b141414141414146b6b6b6b6b6b6b6b001414141414146b6b6b6b6b6b6b6b000014141414146b6b6b6b6b6b6b6b000000"],
+  [75,[0.0,0.0,0.0],[0.0,-0.0095,0.0,0.999956],"14140000141414146b6b6b6b6b6b6b6b141414141414146b6b6b6b6b6b6b6b001414141414146b6b6b6b6b6b6b6b000014141414146b6b6b6b6b6b6b6b000000"],
+  [77,[0.0,0.0,0.0],[0.0044,0.0,0.0,0.99999],"14140000141414146b6b6b6b6b6b6b6b141414141414146b6b6b6b6b6b6b6b001414141414146b6b6b6b6b6b6b6b000014141414146b6b6b6b6b6b6b6b000000"],
+  [79,[0.0,0.0,0.0],[0.0044,0.0,0.0,0.99999],"14140000141414146b6b6b6b6b6b6b6b141414141414146b6b6b6b6b6b6b6b001414141414146b6b6b6b6b6b6b6b000014141414146b6b6b6b6b6b6b6b000000"],
+  [81,[0.0,0.0,0.0],[-0.015499,-0.024994,9.3e-05,0.99957],"14140000141414146b6b6b6b6b6b6b6b141414141414146b6b6b6b6b6b6b6b001414141414146b6b6b6b6b6b6b6b000014141414146b6b6b6b6b6b6b6b000000"],
+  [94,[0.0,0.0,0.0],[-0.015499,-0.024994,9.3e-05,0.99957],"14140000141414146b6b6b6b6b6b6b6b141414141414146b6b6b6b6b6b6b6b001414141414146b6b6b6b6b6b6b6b000014141414146b6b6b6b6b6b6b6b000000"],
+  [96,[0.0,0.0,0.0],[-0.015498,-0.007499,-0.000178,0.999854],"14140000141414146b6b6b6b6b6b6b6b141414141414146b6b6b6b6b6b6b6b001414141414146b6b6b6b6b6b6b6b000014141414146b6b6b6b6b6b6b6b000000"],
+  [98,[0.0,0.0,0.0],[0.0,-0.0095,0.0,0.999956],"14140000141414146b6b6b6b6b6b6b6b141414141414146b6b6b6b6b6b6b6b001414141414146b6b6b6b6b6b6b6b000014141414146b6b6b6b6b6b6b6b000000"],
+  [113,[0.0,0.0,0.0],[0.0,-0.0095,0.0,0.999957],"14140000141414146b6b6b6b6b6b6b6b141414141414146b6b6b6b6b6b6b6b001414141414146b6b6b6b6b6b6b6b000014141414146b6b6b6b6b6b6b6b000000"],
+  [115,[0.0,0.0,0.0],[0.0,0.0005,0.0,1.000002],"14140000141414146b6b6b6b6b6b6b6b141414141414146b6b6b6b6b6b6b6b001414141414146b6b6b6b6b6b6b6b000014141414146b6b6b6b6b6b6b6b000000"],
+  [117,[0.0,0.0,0.0],[0.0,-0.0095,0.0,0.999956],"14140000141414146b6b6b6b6b6b6b6b141414141414146b6b6b6b6b6b6b6b001414141414146b6b6b6b6b6b6b6b000014141414146b6b6b6b6b6b6b6b000000"],
+  [124,[0.0,0.0,0.0],[0.0,-0.0095,0.0,0.999956],"14140000141414146b6b6b6b6b6b6b6b141414141414146b6b6b6b6b6b6b6b001414141414146b6b6b6b6b6b6b6b000014141414146b6b6b6b6b6b6b6b000000"],
+  [158,[0.0,0.0,0.0],[0.0,-0.0095,0.0,0.999956],"14140000141414146b6b6b6b6b6b6b6b141414141414146b6b6b6b6b6b6b6b001414141414146b6b6b6b6b6b6b6b000014141414146b6b6b6b6b6b6b6b000000"],
+  [160,[0.0,0.0,0.0],[-0.010499,-0.009499,-0.0001,0.999901],"14140000141414146b6b6b6b6b6b6b6b141414141414146b6b6b6b6b6b6b6b001414141414146b6b6b6b6b6b6b6b000014141414146b6b6b6b6b6b6b6b000000"],
+  [180,[0.0,0.0,0.0],[-0.010499,-0.009499,-0.0001,0.999901],"14140000141414146b6b6b6b6b6b6b6b141414141414146b6b6b6b6b6b6b6b001414141414146b6b6b6b6b6b6b6b000014141414146b6b6b6b6b6b6b6b000000"],
+  [182,[0.0,0.0,0.0],[0.0,-0.042987,0.0,0.999076],"14140000141414146b6b6b6b6b6b6b6b141414141414146b6b6b6b6b6b6b6b001414141414146b6b6b6b6b6b6b6b000014141414146b6b6b6b6b6b6b6b000000"],
+  [220,[0.0,0.0,0.0],[0.0,-0.042987,0.0,0.999076],"14140000141414146b6b6b6b6b6b6b6b141414141414146b6b6b6b6b6b6b6b001414141414146b6b6b6b6b6b6b6b000014141414146b6b6b6b6b6b6b6b000000"],
+];
 const PHONEME_VOCAB = { "<blank>":0, A:1, E:2, I:3, N:4, O:5, U:6, a:7, b:8, by:9, ch:10, cl:11, d:12, dy:13, e:14, f:15, g:16, gy:17, h:18, hy:19, i:20, j:21, k:22, ky:23, m:24, my:25, n:26, ny:27, o:28, p:29, py:30, r:31, ry:32, s:33, sh:34, t:35, ts:36, ty:37, u:38, v:39, w:40, y:41, z:42, pau:43 };
 
 const LANG = {
-  ja: { name:"日本語", drop_audio:"WAV / MP3を画面内のどこにでもドロップ", generate:"VMDを生成",
+  ja: { name:"日本語", drop_audio:"音声ファイルをドロップ / クリックで選択\n(.wav/.mp3)",
+        advanced:"詳細設定", mouth:"口の開き具合", lead:"タイミング補正（先行フレーム）",
+        shapes:"各フレームの最大開口種類数", interval:"出力FPS", eye:"目のアニメーション（自動）",
+        vowel_names:["あ","い","う","え","お","ん"],
         audio_required:"開始前にWAVまたはMP3をドロップしてください。",
         model_loading:"モデルを読み込み中", model_ready:"モデル準備完了",
         analysing:"音声を解析中", writing:"VMDを書き出し中", done:"完了。VMDをダウンロードしました。",
         decode_failed:"音声を読み込めませんでした。", too_short:"音声が短すぎます。",
-        model_failed:"モデルの読み込みに失敗しました。", engine:"実行エンジン" },
-  zh: { name:"中文", drop_audio:"将 WAV 或 MP3 拖放到窗口中的任意位置", generate:"生成 VMD",
+        model_failed:"モデルの読み込みに失敗しました。" },
+  zh: { name:"中文", drop_audio:"拖放音频文件 / 点击选择\n(.wav/.mp3)",
+        advanced:"高级设置", mouth:"口的张开程度", lead:"时机补偿（提前帧数）",
+        shapes:"每帧最大口形种类数", interval:"输出FPS", eye:"眼部动画（自动）",
+        vowel_names:["A","I","U","E","O","N"],
         audio_required:"开始前请拖放 WAV 或 MP3。",
         model_loading:"正在加载模型", model_ready:"模型已就绪",
         analysing:"正在分析音频", writing:"正在写出 VMD", done:"完成。已下载 VMD。",
         decode_failed:"无法读取音频。", too_short:"音频太短。",
-        model_failed:"模型加载失败。", engine:"运行引擎" },
-  en: { name:"English", drop_audio:"Drop WAV or MP3 anywhere in this window", generate:"Audio to Vmd",
+        model_failed:"模型加载失败。" },
+  en: { name:"English", drop_audio:"Drop an audio file / click to browse\n(.wav/.mp3)",
+        advanced:"Advanced Settings", mouth:"Mouth Openness", lead:"Timing Offset (Lead Frames)",
+        shapes:"Max Shape Types per Frame", interval:"Output FPS", eye:"Eye Animation (Auto)",
+        vowel_names:["A","I","U","E","O","N"],
         audio_required:"Drop a WAV or MP3 file before starting.",
         model_loading:"Loading model", model_ready:"Model ready",
         analysing:"Analysing audio", writing:"Writing VMD", done:"Done. VMD downloaded.",
         decode_failed:"Could not decode the audio.", too_short:"Audio is too short.",
-        model_failed:"Failed to load the model.", engine:"Engine" }
+        model_failed:"Failed to load the model." }
 };
 
 let langCode = "ja";
@@ -119,6 +192,21 @@ const runEl = document.getElementById("run");
 const fillEl = document.getElementById("fill");
 const pickerEl = document.getElementById("picker");
 const engineEl = document.getElementById("engine");
+const settingsTitleEl = document.getElementById("settingsTitle");
+const mouthLabelEl = document.getElementById("mouthLabel");
+const mouthRowEl = document.getElementById("mouthRow");
+const leadEl = document.getElementById("lead");
+const leadValEl = document.getElementById("leadVal");
+const leadLabelEl = document.getElementById("leadLabel");
+const shapesEl = document.getElementById("shapes");
+const shapesValEl = document.getElementById("shapesVal");
+const shapesLabelEl = document.getElementById("shapesLabel");
+const intervalEl = document.getElementById("interval");
+const intervalLabelEl = document.getElementById("intervalLabel");
+const eyeEl = document.getElementById("eye");
+const eyeLabelEl = document.getElementById("eyeLabel");
+const resetEl = document.getElementById("reset");
+const mouthSliders = [];
 
 function text(key) { return LANG[langCode][key]; }
 
@@ -129,12 +217,66 @@ function setStatus(key, extra) {
 }
 
 function applyLanguage() {
-  runEl.textContent = text("generate");
+  runEl.textContent = "Audio to Vmd";
   dropTitleEl.textContent = audioFile ? audioFile.name : text("drop_audio");
   statusEl.textContent = statusKey ? text(statusKey) + statusExtra : "";
-  engineEl.textContent = engineName ? text("engine") + ": " + engineName : "";
+  engineEl.textContent = engineName ? "Engine: " + engineName : "";
+  settingsTitleEl.textContent = text("advanced");
+  mouthLabelEl.textContent = text("mouth");
+  leadLabelEl.textContent = text("lead");
+  shapesLabelEl.textContent = text("shapes");
+  intervalLabelEl.textContent = text("interval");
+  eyeLabelEl.textContent = text("eye");
+  const names = LANG[langCode].vowel_names;
+  mouthSliders.forEach((item, i) => { item.nameEl.textContent = names[i]; });
   for (const b of langsEl.children) b.classList.toggle("on", b.dataset.code === langCode);
 }
+
+for (let i = 0; i < MORPHS.length; i++) {
+  const wrap = document.createElement("div");
+  wrap.className = "mouthItem";
+  const nameEl = document.createElement("span");
+  const slider = document.createElement("input");
+  slider.type = "range";
+  slider.min = "0";
+  slider.max = "1";
+  slider.step = "0.1";
+  const valEl = document.createElement("span");
+  slider.addEventListener("input", () => { valEl.textContent = Number(slider.value).toFixed(1); });
+  wrap.appendChild(nameEl);
+  wrap.appendChild(slider);
+  wrap.appendChild(valEl);
+  mouthRowEl.appendChild(wrap);
+  mouthSliders.push({ slider, valEl, nameEl });
+}
+
+function applyDefaults() {
+  mouthSliders.forEach((item, i) => {
+    item.slider.value = String(DEFAULTS.scales[i]);
+    item.valEl.textContent = DEFAULTS.scales[i].toFixed(1);
+  });
+  leadEl.value = String(DEFAULTS.lead);
+  leadValEl.textContent = String(DEFAULTS.lead);
+  shapesEl.value = String(DEFAULTS.shapes);
+  shapesValEl.textContent = String(DEFAULTS.shapes);
+  intervalEl.value = String(DEFAULTS.interval);
+  eyeEl.checked = DEFAULTS.eye;
+}
+
+function readSettings() {
+  return {
+    scales: mouthSliders.map(item => Number(item.slider.value)),
+    lead: Number(leadEl.value),
+    shapes: Number(shapesEl.value),
+    stride: 30 / Number(intervalEl.value),
+    eye: eyeEl.checked
+  };
+}
+
+leadEl.addEventListener("input", () => { leadValEl.textContent = leadEl.value; });
+shapesEl.addEventListener("input", () => { shapesValEl.textContent = shapesEl.value; });
+resetEl.addEventListener("click", applyDefaults);
+applyDefaults();
 
 for (const code of Object.keys(LANG)) {
   const b = document.createElement("button");
@@ -188,8 +330,9 @@ async function fetchParts() {
       chunks.push(value);
       loaded += value.length;
       if (total > 0) {
-        setStatus("model_loading", " " + Math.floor(loaded / total * 100) + "%");
-        setProgress(Math.floor(loaded / total * 100));
+        const pct = Math.min(100, Math.floor(loaded / total * 100));
+        setStatus("model_loading", " " + pct + "%");
+        setProgress(pct);
       }
     }
     buffers.push(chunks);
@@ -214,7 +357,7 @@ async function loadModel() {
       engineName = "WASM (CPU)";
     }
     setStatus("model_ready");
-    engineEl.textContent = text("engine") + ": " + engineName;
+    engineEl.textContent = "Engine: " + engineName;
     setProgress(0);
     updateRunState();
   } catch (e) {
@@ -364,7 +507,7 @@ async function inferProbabilities(audio, progress) {
   return { times: timesList, probabilities: probsList, tokens, count: phoneIds.length };
 }
 
-function makeWeights(audio, times, probabilities, tokens, count) {
+function makeWeights(audio, times, probabilities, tokens, count, settings) {
   const frameCount = Math.max(2, Math.ceil(audio.length / RATE * FPS));
   const { level, threshold } = activeEnergy(audio, frameCount);
   const weights = Array.from({ length: frameCount }, () => new Float32Array(MORPHS.length));
@@ -421,7 +564,7 @@ function makeWeights(audio, times, probabilities, tokens, count) {
     for (let i = 0; i < scores.length; i++) if (scores[i] < cutoff) scores[i] = 0;
 
     const order = Array.from(scores.keys()).sort((a, b) => scores[b] - scores[a]);
-    for (let r = MAX_ACTIVE_MORPHS; r < order.length; r++) scores[order[r]] = 0;
+    for (let r = settings.shapes; r < order.length; r++) scores[order[r]] = 0;
 
     total = 0;
     for (let i = 0; i < scores.length; i++) total += scores[i];
@@ -429,9 +572,7 @@ function makeWeights(audio, times, probabilities, tokens, count) {
     for (let i = 0; i < scores.length; i++) scores[i] /= total;
 
     const gain = 0.16 + 0.84 * level[frame];
-    for (let i = 0; i < scores.length; i++) weights[frame][i] = scores[i] * gain;
-    const nIndex = morphIndex["\u3093"];
-    weights[frame][nIndex] = Math.min(weights[frame][nIndex], 0.5);
+    for (let i = 0; i < scores.length; i++) weights[frame][i] = scores[i] * gain * settings.scales[i];
   }
 
   const result = Array.from({ length: frameCount }, () => new Float32Array(MORPHS.length));
@@ -452,11 +593,20 @@ function makeWeights(audio, times, probabilities, tokens, count) {
       }
     }
   }
-  if (LEAD_FRAMES > 0) {
-    for (let frame = 0; frame < frameCount - LEAD_FRAMES; frame++) {
-      result[frame] = result[frame + LEAD_FRAMES];
+  const lead = settings.lead;
+  if (lead > 0) {
+    for (let frame = 0; frame < frameCount - lead; frame++) {
+      result[frame] = result[frame + lead];
     }
-    for (let frame = frameCount - LEAD_FRAMES; frame < frameCount; frame++) {
+    for (let frame = Math.max(0, frameCount - lead); frame < frameCount; frame++) {
+      result[frame] = new Float32Array(MORPHS.length);
+    }
+  } else if (lead < 0) {
+    const delay = -lead;
+    for (let frame = frameCount - 1; frame >= delay; frame--) {
+      result[frame] = result[frame - delay];
+    }
+    for (let frame = 0; frame < Math.min(delay, frameCount); frame++) {
       result[frame] = new Float32Array(MORPHS.length);
     }
   }
@@ -465,8 +615,7 @@ function makeWeights(audio, times, probabilities, tokens, count) {
   return { result, threshold };
 }
 
-function reduceMorphKeys(values) {
-  const points = values.map((value, frame) => [frame, value]);
+function reduceMorphKeys(points) {
   if (points.length <= 2) return points;
   const keep = new Array(points.length).fill(false);
   keep[0] = true;
@@ -500,11 +649,51 @@ function fixedBytes(view, offset, bytes, size) {
   return offset + size;
 }
 
-function writeVmd(weights) {
-  const morphKeys = MORPHS.map((morph, index) => [morph, reduceMorphKeys(weights.map(w => w[index]))]);
+function hexBytes(hex) {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+  return bytes;
+}
+
+function eyeMorphKeys(frameCount) {
+  const entries = [];
+  for (const track of EYE_MORPHS) {
+    for (let base = 0; base < frameCount; base += EYE_PERIOD) {
+      for (const [frame, value] of track.keys) {
+        const target = base + frame;
+        if (target < frameCount) entries.push([track.name, target, value]);
+      }
+    }
+  }
+  return entries;
+}
+
+function eyeBoneKeys(frameCount) {
+  const entries = [];
+  for (let base = 0; base < frameCount; base += EYE_PERIOD) {
+    for (const [frame, pos, rot, interp] of EYE_BONE_KEYS) {
+      const target = base + frame;
+      if (target < frameCount) entries.push([target, pos, rot, interp]);
+    }
+  }
+  return entries;
+}
+
+function writeVmd(weights, settings) {
+  const frameCount = weights.length;
+  const stride = settings.stride;
+  const morphKeys = MORPHS.map((morph, index) => {
+    const points = [];
+    for (let frame = 0; frame < frameCount; frame += stride) points.push([frame, weights[frame][index]]);
+    if (points[points.length - 1][0] !== frameCount - 1) points.push([frameCount - 1, weights[frameCount - 1][index]]);
+    return [morph, reduceMorphKeys(points)];
+  });
   let keyCount = 0;
   for (const [, keys] of morphKeys) keyCount += keys.length;
-  const size = 30 + 20 + 4 + 4 + keyCount * 23 + 16;
+  const eyeMorphs = settings.eye ? eyeMorphKeys(frameCount) : [];
+  const eyeBones = settings.eye ? eyeBoneKeys(frameCount) : [];
+  keyCount += eyeMorphs.length;
+  const size = 30 + 20 + 4 + eyeBones.length * 111 + 4 + keyCount * 23 + 16;
   const buffer = new ArrayBuffer(size);
   const view = new DataView(buffer);
   let offset = 0;
@@ -512,7 +701,16 @@ function writeVmd(weights) {
   for (let i = 0; i < header.length; i++) view.setUint8(offset + i, header.charCodeAt(i));
   offset += 30;
   offset = fixedBytes(view, offset, VMD_MODEL_NAME_CP932, 20);
-  view.setUint32(offset, 0, true); offset += 4;
+  view.setUint32(offset, eyeBones.length, true); offset += 4;
+  for (const [frame, pos, rot, interp] of eyeBones) {
+    offset = fixedBytes(view, offset, EYE_BONE_NAME, 15);
+    view.setUint32(offset, frame, true); offset += 4;
+    for (const v of pos) { view.setFloat32(offset, v, true); offset += 4; }
+    for (const v of rot) { view.setFloat32(offset, v, true); offset += 4; }
+    const ib = hexBytes(interp);
+    for (let i = 0; i < 64; i++) view.setUint8(offset + i, ib[i]);
+    offset += 64;
+  }
   view.setUint32(offset, keyCount, true); offset += 4;
   for (const [morph, keys] of morphKeys) {
     for (const [frame, value] of keys) {
@@ -520,6 +718,11 @@ function writeVmd(weights) {
       view.setUint32(offset, frame, true); offset += 4;
       view.setFloat32(offset, value, true); offset += 4;
     }
+  }
+  for (const [name, frame, value] of eyeMorphs) {
+    offset = fixedBytes(view, offset, name, 15);
+    view.setUint32(offset, frame, true); offset += 4;
+    view.setFloat32(offset, value, true); offset += 4;
   }
   view.setUint32(offset, 0, true); offset += 4;
   view.setUint32(offset, 0, true); offset += 4;
@@ -565,10 +768,11 @@ runEl.addEventListener("click", async () => {
       return;
     }
     setProgress(75);
-    const { result } = makeWeights(audio, inferred.times, inferred.probabilities, inferred.tokens, inferred.count);
+    const settings = readSettings();
+    const { result } = makeWeights(audio, inferred.times, inferred.probabilities, inferred.tokens, inferred.count, settings);
     setProgress(90);
     setStatus("writing");
-    const vmd = writeVmd(result);
+    const vmd = writeVmd(result, settings);
     const stem = audioFile.name.replace(/\.[^.]+$/, "");
     download(vmd, stem + "_lipsync.vmd");
     setProgress(100);
