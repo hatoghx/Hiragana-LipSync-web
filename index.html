@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hiragana LipSync</title>
+<style>
+:root { --teal:#0F766E; --teal-h:#0B625C; --teal-p:#094E49; }
+* { box-sizing:border-box; margin:0; padding:0; }
+body {
+  background:#F6F8FB; color:#111827;
+  font-family:"Segoe UI","Yu Gothic UI","Hiragino Sans",sans-serif;
+  min-height:100vh; display:flex; justify-content:center; align-items:center;
+}
+#app { width:600px; max-width:94vw; padding:24px 30px; display:flex; flex-direction:column; gap:12px; }
+#langs { display:flex; }
+#langs button {
+  background:#FFFFFF; border:1px solid #B8C4D0; color:#344054;
+  font-size:12px; font-weight:700; min-height:30px; padding:0 12px; cursor:pointer;
+}
+#langs button:hover { background:#E8F1F0; }
+#langs button.on { background:var(--teal); border-color:var(--teal); color:#FFFFFF; }
+#drop {
+  border:2px dashed #B8C4D0; min-height:150px; display:flex; flex-direction:column;
+  justify-content:center; align-items:center; gap:8px; padding:26px 24px; text-align:center;
+  cursor:pointer; transition:background .15s,border-color .15s;
+}
+#drop.active { background:rgba(15,118,110,.16); border-color:var(--teal); }
+#dropTitle { color:#101828; font-size:16px; font-weight:700; }
+#dropPath { color:#344054; font-size:12px; word-break:break-all; }
+#status { color:#344054; font-size:12px; min-height:16px; }
+#run {
+  background:var(--teal); border:1px solid var(--teal); color:#FFFFFF;
+  font-size:14px; font-weight:700; min-height:44px; cursor:pointer;
+}
+#run:hover:enabled { background:var(--teal-h); border-color:var(--teal-h); }
+#run:active:enabled { background:var(--teal-p); border-color:var(--teal-p); }
+#run:disabled { background:#D6DCE4; border-color:#D6DCE4; color:#667085; cursor:default; }
+#bar { background:#DCE3EA; height:6px; }
+#fill { background:var(--teal); height:6px; width:0%; transition:width .15s; }
+#credit { color:#667085; font-size:11px; }
+#engine { color:#667085; font-size:11px; min-height:14px; }
+#credit a { color:var(--teal); }
+input[type=file] { display:none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="langs"></div>
+  <div id="drop">
+    <div id="dropTitle"></div>
+    <div id="dropPath"></div>
+  </div>
+  <div id="status"></div>
+  <button id="run" disabled></button>
+  <div id="bar"><div id="fill"></div></div>
+  <div id="engine"></div>
+  <div id="credit">Model: <a href="https://huggingface.co/TylorShine/wavlm-base-plus-hiragana-ctc-v2" target="_blank" rel="noopener">wavlm-base-plus-hiragana-ctc-v2</a> (CC BY-SA 3.0)</div>
+  <input type="file" id="picker" accept=".wav,.mp3,audio/wav,audio/mpeg">
+</div>
+<script src="config.js?v=4"></script>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.webgpu.min.js"></script>
+<script>
+"use strict";
+
+const FPS = 30;
+const RATE = 16000;
+const VMD_MODEL_NAME_CP932 = [0x68,0x69,0x72,0x61,0x67,0x61,0x6e,0x61,0x2d,0x6c,0x69,0x70,0x73,0x79,0x6e,0x63];
+const MORPHS = ["\u3042","\u3044","\u3046","\u3048","\u304a","\u3093"];
+const MORPH_CP932 = { "\u3042":[0x82,0xa0], "\u3044":[0x82,0xa2], "\u3046":[0x82,0xa4], "\u3048":[0x82,0xa6], "\u304a":[0x82,0xa8], "\u3093":[0x82,0xf1] };
+const VOWELS = { a:"\u3042", A:"\u3042", i:"\u3044", I:"\u3044", u:"\u3046", U:"\u3046", e:"\u3048", E:"\u3048", o:"\u304a", O:"\u304a", N:"\u3093" };
+const CLOSERS = new Set(["p","py","b","by","m","my","pau"]);
+const DOMINANT_RATIO = 0.40;
+const MAX_ACTIVE_MORPHS = 2;
+const RELEASE_DECAY = 0.45;
+const LEAD_FRAMES = 5;
+const KEY_TOLERANCE = 0.01;
+const CHUNK_SAMPLES = 14 * RATE;
+const OVERLAP_SAMPLES = RATE;
+const STEP_SAMPLES = CHUNK_SAMPLES - OVERLAP_SAMPLES;
+const MODEL_PARTS = window.MODEL_SOURCES;
+const PHONEME_VOCAB = { "<blank>":0, A:1, E:2, I:3, N:4, O:5, U:6, a:7, b:8, by:9, ch:10, cl:11, d:12, dy:13, e:14, f:15, g:16, gy:17, h:18, hy:19, i:20, j:21, k:22, ky:23, m:24, my:25, n:26, ny:27, o:28, p:29, py:30, r:31, ry:32, s:33, sh:34, t:35, ts:36, ty:37, u:38, v:39, w:40, y:41, z:42, pau:43 };
+
+const LANG = {
+  ja: { name:"日本語", drop_audio:"WAV / MP3を画面内のどこにでもドロップ", generate:"VMDを生成",
+        audio_required:"開始前にWAVまたはMP3をドロップしてください。",
+        model_loading:"モデルを読み込み中", model_ready:"モデル準備完了",
+        analysing:"音声を解析中", writing:"VMDを書き出し中", done:"完了。VMDをダウンロードしました。",
+        decode_failed:"音声を読み込めませんでした。", too_short:"音声が短すぎます。",
+        model_failed:"モデルの読み込みに失敗しました。", engine:"実行エンジン" },
+  zh: { name:"中文", drop_audio:"将 WAV 或 MP3 拖放到窗口中的任意位置", generate:"生成 VMD",
+        audio_required:"开始前请拖放 WAV 或 MP3。",
+        model_loading:"正在加载模型", model_ready:"模型已就绪",
+        analysing:"正在分析音频", writing:"正在写出 VMD", done:"完成。已下载 VMD。",
+        decode_failed:"无法读取音频。", too_short:"音频太短。",
+        model_failed:"模型加载失败。", engine:"运行引擎" },
+  en: { name:"English", drop_audio:"Drop WAV or MP3 anywhere in this window", generate:"Audio to Vmd",
+        audio_required:"Drop a WAV or MP3 file before starting.",
+        model_loading:"Loading model", model_ready:"Model ready",
+        analysing:"Analysing audio", writing:"Writing VMD", done:"Done. VMD downloaded.",
+        decode_failed:"Could not decode the audio.", too_short:"Audio is too short.",
+        model_failed:"Failed to load the model.", engine:"Engine" }
+};
+
+let langCode = "ja";
+let audioFile = null;
+let session = null;
+let running = false;
+let statusKey = "";
+let statusExtra = "";
+let engineName = "";
+
+const langsEl = document.getElementById("langs");
+const dropEl = document.getElementById("drop");
+const dropTitleEl = document.getElementById("dropTitle");
+const dropPathEl = document.getElementById("dropPath");
+const statusEl = document.getElementById("status");
+const runEl = document.getElementById("run");
+const fillEl = document.getElementById("fill");
+const pickerEl = document.getElementById("picker");
+const engineEl = document.getElementById("engine");
+
+function text(key) { return LANG[langCode][key]; }
+
+function setStatus(key, extra) {
+  statusKey = key;
+  statusExtra = extra || "";
+  statusEl.textContent = key ? text(key) + statusExtra : "";
+}
+
+function applyLanguage() {
+  runEl.textContent = text("generate");
+  dropTitleEl.textContent = audioFile ? audioFile.name : text("drop_audio");
+  statusEl.textContent = statusKey ? text(statusKey) + statusExtra : "";
+  engineEl.textContent = engineName ? text("engine") + ": " + engineName : "";
+  for (const b of langsEl.children) b.classList.toggle("on", b.dataset.code === langCode);
+}
+
+for (const code of Object.keys(LANG)) {
+  const b = document.createElement("button");
+  b.textContent = LANG[code].name;
+  b.dataset.code = code;
+  b.addEventListener("click", () => { langCode = code; applyLanguage(); });
+  langsEl.appendChild(b);
+}
+
+function setProgress(value) { fillEl.style.width = value + "%"; }
+
+function setAudio(file) {
+  const name = file.name.toLowerCase();
+  if (!name.endsWith(".wav") && !name.endsWith(".mp3")) return;
+  audioFile = file;
+  dropTitleEl.textContent = file.name;
+  dropPathEl.textContent = (file.size / 1e6).toFixed(2) + " MB";
+  updateRunState();
+}
+
+function updateRunState() { runEl.disabled = running || !audioFile || !session; }
+
+["dragenter","dragover"].forEach(type => document.addEventListener(type, e => {
+  e.preventDefault(); dropEl.classList.add("active");
+}));
+["dragleave","drop"].forEach(type => document.addEventListener(type, e => {
+  e.preventDefault(); dropEl.classList.remove("active");
+}));
+document.addEventListener("drop", e => {
+  if (e.dataTransfer.files.length === 1) setAudio(e.dataTransfer.files[0]);
+});
+dropEl.addEventListener("click", () => pickerEl.click());
+pickerEl.addEventListener("change", () => { if (pickerEl.files.length === 1) setAudio(pickerEl.files[0]); });
+
+async function fetchParts() {
+  const buffers = [];
+  let total = 0;
+  let loaded = 0;
+  const heads = await Promise.all(MODEL_PARTS.map(p => fetch(p)));
+  for (const r of heads) {
+    if (!r.ok) throw new Error("fetch " + r.url + " " + r.status);
+    const len = Number(r.headers.get("Content-Length") || 0);
+    total += len;
+  }
+  for (const r of heads) {
+    const reader = r.body.getReader();
+    const chunks = [];
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      loaded += value.length;
+      if (total > 0) {
+        setStatus("model_loading", " " + Math.floor(loaded / total * 100) + "%");
+        setProgress(Math.floor(loaded / total * 100));
+      }
+    }
+    buffers.push(chunks);
+  }
+  let size = 0;
+  for (const chunks of buffers) for (const c of chunks) size += c.length;
+  const merged = new Uint8Array(size);
+  let offset = 0;
+  for (const chunks of buffers) for (const c of chunks) { merged.set(c, offset); offset += c.length; }
+  return merged;
+}
+
+async function loadModel() {
+  try {
+    setStatus("model_loading");
+    const bytes = await fetchParts();
+    try {
+      session = await ort.InferenceSession.create(bytes, { executionProviders: ["webgpu"] });
+      engineName = "WebGPU";
+    } catch (e) {
+      session = await ort.InferenceSession.create(bytes, { executionProviders: ["wasm"] });
+      engineName = "WASM (CPU)";
+    }
+    setStatus("model_ready");
+    engineEl.textContent = text("engine") + ": " + engineName;
+    setProgress(0);
+    updateRunState();
+  } catch (e) {
+    console.error(e);
+    setStatus("model_failed");
+  }
+}
+
+async function decodeAudio(file) {
+  const raw = await file.arrayBuffer();
+  const probe = new AudioContext();
+  let decoded;
+  try {
+    decoded = await probe.decodeAudioData(raw);
+  } finally {
+    probe.close();
+  }
+  const frames = Math.ceil(decoded.duration * RATE);
+  const offline = new OfflineAudioContext(1, frames, RATE);
+  const source = offline.createBufferSource();
+  source.buffer = decoded;
+  source.connect(offline.destination);
+  source.start();
+  const rendered = await offline.startRendering();
+  return rendered.getChannelData(0);
+}
+
+function rmsFrames(audio, frameCount) {
+  const samplesPerFrame = RATE / FPS;
+  const values = new Float32Array(frameCount);
+  for (let frame = 0; frame < frameCount; frame++) {
+    const start = Math.round(frame * samplesPerFrame);
+    const end = Math.min(audio.length, Math.round((frame + 1) * samplesPerFrame));
+    if (end > start) {
+      let sum = 0;
+      for (let i = start; i < end; i++) sum += audio[i] * audio[i];
+      values[frame] = Math.sqrt(sum / (end - start));
+    }
+  }
+  return values;
+}
+
+function percentile(sortedCopy, q) {
+  const n = sortedCopy.length;
+  if (n === 1) return sortedCopy[0];
+  const pos = (q / 100) * (n - 1);
+  const lo = Math.floor(pos);
+  const hi = Math.ceil(pos);
+  if (lo === hi) return sortedCopy[lo];
+  return sortedCopy[lo] + (sortedCopy[hi] - sortedCopy[lo]) * (pos - lo);
+}
+
+function activeEnergy(audio, frameCount) {
+  const values = rmsFrames(audio, frameCount);
+  const smoothed = new Float32Array(frameCount);
+  for (let i = 0; i < frameCount; i++) {
+    let sum = 0;
+    for (let k = -1; k <= 1; k++) {
+      const j = i + k;
+      if (j >= 0 && j < frameCount) sum += values[j];
+    }
+    smoothed[i] = sum / 3;
+  }
+  const sorted = Array.from(smoothed).sort((a, b) => a - b);
+  const peak = Math.max(percentile(sorted, 92), 1e-8);
+  const floor = percentile(sorted, 12);
+  const threshold = Math.max(floor * 1.7, peak * 0.018);
+  const level = new Float32Array(frameCount);
+  const span = Math.max(peak - threshold, 1e-8);
+  for (let i = 0; i < frameCount; i++) {
+    level[i] = Math.min(1, Math.max(0, (smoothed[i] - threshold) / span));
+  }
+  return { level, threshold };
+}
+
+async function inferProbabilities(audio, progress) {
+  const blankId = 0;
+  const phoneIds = Object.values(PHONEME_VOCAB).filter(id => id !== blankId).sort((a, b) => a - b);
+  const idToToken = {};
+  for (const [token, id] of Object.entries(PHONEME_VOCAB)) idToToken[id] = token;
+  const tokens = {};
+  phoneIds.forEach((id, index) => { tokens[index] = idToToken[id]; });
+
+  const starts = [];
+  for (let s = 0; s < audio.length; s += STEP_SAMPLES) starts.push(s);
+  const timesList = [];
+  const probsList = [];
+  let processed = 0;
+
+  for (const start of starts) {
+    const end = Math.min(audio.length, start + CHUNK_SAMPLES);
+    const chunk = audio.subarray(start, end);
+    if (chunk.length < RATE / 2) break;
+    const input = new ort.Tensor("float32", Float32Array.from(chunk), [1, chunk.length]);
+    const outputs = await session.run({ input_values: input });
+    const logits = outputs.phoneme_logits;
+    const T = logits.dims[1];
+    const C = logits.dims[2];
+    const data = logits.data;
+
+    const reduced = new Float32Array(T * phoneIds.length);
+    for (let t = 0; t < T; t++) {
+      for (let p = 0; p < phoneIds.length; p++) {
+        reduced[t * phoneIds.length + p] = data[t * C + phoneIds[p]];
+      }
+    }
+    const pooled = new Float32Array(T * phoneIds.length);
+    for (let p = 0; p < phoneIds.length; p++) {
+      for (let t = 0; t < T; t++) {
+        let sum = 0;
+        for (let k = -2; k <= 2; k++) {
+          const j = t + k;
+          if (j >= 0 && j < T) sum += reduced[j * phoneIds.length + p];
+        }
+        pooled[t * phoneIds.length + p] = sum / 5;
+      }
+    }
+    const probs = new Float32Array(T * phoneIds.length);
+    for (let t = 0; t < T; t++) {
+      let maxV = -Infinity;
+      for (let p = 0; p < phoneIds.length; p++) maxV = Math.max(maxV, pooled[t * phoneIds.length + p]);
+      let sum = 0;
+      for (let p = 0; p < phoneIds.length; p++) {
+        const e = Math.exp(pooled[t * phoneIds.length + p] - maxV);
+        probs[t * phoneIds.length + p] = e;
+        sum += e;
+      }
+      for (let p = 0; p < phoneIds.length; p++) probs[t * phoneIds.length + p] /= sum;
+    }
+
+    const step = chunk.length / RATE / T;
+    const left = start === 0 ? 0 : OVERLAP_SAMPLES / RATE / 2;
+    const right = end === audio.length ? chunk.length / RATE : chunk.length / RATE - left;
+    for (let t = 0; t < T; t++) {
+      const local = t * step;
+      if (local >= left && local < right) {
+        timesList.push(start / RATE + local);
+        probsList.push(probs.subarray(t * phoneIds.length, (t + 1) * phoneIds.length));
+      }
+    }
+    processed += 1;
+    progress(Math.floor(processed / starts.length * 65));
+    if (end === audio.length) break;
+  }
+
+  if (timesList.length === 0) throw new Error("too_short");
+  return { times: timesList, probabilities: probsList, tokens, count: phoneIds.length };
+}
+
+function makeWeights(audio, times, probabilities, tokens, count) {
+  const frameCount = Math.max(2, Math.ceil(audio.length / RATE * FPS));
+  const { level, threshold } = activeEnergy(audio, frameCount);
+  const weights = Array.from({ length: frameCount }, () => new Float32Array(MORPHS.length));
+  const morphIndex = {};
+  MORPHS.forEach((m, i) => { morphIndex[m] = i; });
+  const vowelIds = [];
+  const closerIds = [];
+  for (let index = 0; index < count; index++) {
+    const token = tokens[index];
+    if (token in VOWELS) vowelIds.push([index, VOWELS[token]]);
+    if (CLOSERS.has(token)) closerIds.push(index);
+  }
+
+  let cursor = 0;
+  for (let frame = 0; frame < frameCount; frame++) {
+    const start = frame / FPS;
+    const end = (frame + 1) / FPS;
+    const selected = [];
+    while (cursor > 0 && times[cursor - 1] >= start) cursor--;
+    while (cursor < times.length && times[cursor] < start) cursor++;
+    let scan = cursor;
+    while (scan < times.length && times[scan] < end) { selected.push(scan); scan++; }
+    if (selected.length === 0) {
+      const mid = (start + end) / 2;
+      let best = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < times.length; i++) {
+        const d = Math.abs(times[i] - mid);
+        if (d < bestDist) { bestDist = d; best = i; }
+      }
+      selected.push(best);
+    }
+    const current = new Float32Array(count);
+    for (const i of selected) {
+      const row = probabilities[i];
+      for (let p = 0; p < count; p++) current[p] += row[p];
+    }
+    for (let p = 0; p < count; p++) current[p] /= selected.length;
+
+    let closeScore = 0;
+    for (const id of closerIds) closeScore += current[id];
+    if (level[frame] < 0.055 || closeScore >= 0.50) continue;
+
+    const scores = new Float32Array(MORPHS.length);
+    for (const [id, morph] of vowelIds) scores[morphIndex[morph]] += current[id];
+    let total = 0;
+    for (let i = 0; i < scores.length; i++) total += scores[i];
+    if (total < 0.055) continue;
+    for (let i = 0; i < scores.length; i++) scores[i] /= total;
+
+    let maxScore = 0;
+    for (let i = 0; i < scores.length; i++) maxScore = Math.max(maxScore, scores[i]);
+    const cutoff = maxScore * DOMINANT_RATIO;
+    for (let i = 0; i < scores.length; i++) if (scores[i] < cutoff) scores[i] = 0;
+
+    const order = Array.from(scores.keys()).sort((a, b) => scores[b] - scores[a]);
+    for (let r = MAX_ACTIVE_MORPHS; r < order.length; r++) scores[order[r]] = 0;
+
+    total = 0;
+    for (let i = 0; i < scores.length; i++) total += scores[i];
+    if (total <= 0) continue;
+    for (let i = 0; i < scores.length; i++) scores[i] /= total;
+
+    const gain = 0.16 + 0.84 * level[frame];
+    for (let i = 0; i < scores.length; i++) weights[frame][i] = scores[i] * gain;
+    const nIndex = morphIndex["\u3093"];
+    weights[frame][nIndex] = Math.min(weights[frame][nIndex], 0.5);
+  }
+
+  const result = Array.from({ length: frameCount }, () => new Float32Array(MORPHS.length));
+  for (let frame = 0; frame < frameCount; frame++) {
+    const previous = frame ? result[frame - 1] : new Float32Array(MORPHS.length);
+    let hasCurrent = false;
+    for (let i = 0; i < MORPHS.length; i++) if (weights[frame][i] > 0) { hasCurrent = true; break; }
+    if (hasCurrent) {
+      let hasPrevious = false;
+      for (let i = 0; i < MORPHS.length; i++) if (previous[i] > 0) { hasPrevious = true; break; }
+      for (let i = 0; i < MORPHS.length; i++) {
+        result[frame][i] = hasPrevious ? previous[i] * 0.30 + weights[frame][i] * 0.70 : weights[frame][i];
+      }
+    } else {
+      for (let i = 0; i < MORPHS.length; i++) {
+        const v = previous[i] * RELEASE_DECAY;
+        result[frame][i] = v < 0.02 ? 0 : v;
+      }
+    }
+  }
+  if (LEAD_FRAMES > 0) {
+    for (let frame = 0; frame < frameCount - LEAD_FRAMES; frame++) {
+      result[frame] = result[frame + LEAD_FRAMES];
+    }
+    for (let frame = frameCount - LEAD_FRAMES; frame < frameCount; frame++) {
+      result[frame] = new Float32Array(MORPHS.length);
+    }
+  }
+  result[0] = new Float32Array(MORPHS.length);
+  result[frameCount - 1] = new Float32Array(MORPHS.length);
+  return { result, threshold };
+}
+
+function reduceMorphKeys(values) {
+  const points = values.map((value, frame) => [frame, value]);
+  if (points.length <= 2) return points;
+  const keep = new Array(points.length).fill(false);
+  keep[0] = true;
+  keep[points.length - 1] = true;
+  const stack = [[0, points.length - 1]];
+  while (stack.length) {
+    const [low, high] = stack.pop();
+    if (high <= low + 1) continue;
+    const [lowFrame, lowValue] = points[low];
+    const [highFrame, highValue] = points[high];
+    const span = highFrame - lowFrame;
+    let worst = KEY_TOLERANCE;
+    let chosen = -1;
+    for (let frame = low + 1; frame < high; frame++) {
+      const [currentFrame, currentValue] = points[frame];
+      const predicted = span === 0 ? lowValue : lowValue + (highValue - lowValue) * (currentFrame - lowFrame) / span;
+      const deviation = Math.abs(currentValue - predicted);
+      if (deviation > worst) { worst = deviation; chosen = frame; }
+    }
+    if (chosen !== -1) {
+      keep[chosen] = true;
+      stack.push([low, chosen]);
+      stack.push([chosen, high]);
+    }
+  }
+  return points.filter((_, frame) => keep[frame]);
+}
+
+function fixedBytes(view, offset, bytes, size) {
+  for (let i = 0; i < size; i++) view.setUint8(offset + i, i < bytes.length ? bytes[i] : 0);
+  return offset + size;
+}
+
+function writeVmd(weights) {
+  const morphKeys = MORPHS.map((morph, index) => [morph, reduceMorphKeys(weights.map(w => w[index]))]);
+  let keyCount = 0;
+  for (const [, keys] of morphKeys) keyCount += keys.length;
+  const size = 30 + 20 + 4 + 4 + keyCount * 23 + 16;
+  const buffer = new ArrayBuffer(size);
+  const view = new DataView(buffer);
+  let offset = 0;
+  const header = "Vocaloid Motion Data 0002";
+  for (let i = 0; i < header.length; i++) view.setUint8(offset + i, header.charCodeAt(i));
+  offset += 30;
+  offset = fixedBytes(view, offset, VMD_MODEL_NAME_CP932, 20);
+  view.setUint32(offset, 0, true); offset += 4;
+  view.setUint32(offset, keyCount, true); offset += 4;
+  for (const [morph, keys] of morphKeys) {
+    for (const [frame, value] of keys) {
+      offset = fixedBytes(view, offset, MORPH_CP932[morph], 15);
+      view.setUint32(offset, frame, true); offset += 4;
+      view.setFloat32(offset, value, true); offset += 4;
+    }
+  }
+  view.setUint32(offset, 0, true); offset += 4;
+  view.setUint32(offset, 0, true); offset += 4;
+  view.setUint32(offset, 0, true); offset += 4;
+  view.setUint32(offset, 0, true); offset += 4;
+  return buffer;
+}
+
+function download(buffer, name) {
+  const blob = new Blob([buffer], { type: "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+runEl.addEventListener("click", async () => {
+  if (!audioFile || !session || running) return;
+  running = true;
+  updateRunState();
+  setProgress(0);
+  try {
+    let audio;
+    try {
+      audio = await decodeAudio(audioFile);
+    } catch (e) {
+      console.error(e);
+      setStatus("decode_failed");
+      return;
+    }
+    setProgress(5);
+    setStatus("analysing");
+    let inferred;
+    try {
+      inferred = await inferProbabilities(audio, setProgress);
+    } catch (e) {
+      console.error(e);
+      setStatus(e.message === "too_short" ? "too_short" : "decode_failed");
+      return;
+    }
+    setProgress(75);
+    const { result } = makeWeights(audio, inferred.times, inferred.probabilities, inferred.tokens, inferred.count);
+    setProgress(90);
+    setStatus("writing");
+    const vmd = writeVmd(result);
+    const stem = audioFile.name.replace(/\.[^.]+$/, "");
+    download(vmd, stem + "_lipsync.vmd");
+    setProgress(100);
+    setStatus("done");
+  } finally {
+    running = false;
+    updateRunState();
+  }
+});
+
+applyLanguage();
+loadModel();
+</script>
+</body>
+</html>
