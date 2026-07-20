@@ -33,7 +33,7 @@ Demo: https://ghx86l.github.io/Hiragana-LipSync-web/
 | Timing Offset | Shift output frames earlier/later |
 | Max Shape Types per Frame | Maximum number of morphs active at once |
 | Output FPS | 10 / 15 / 30 |
-| Eye Animation | Toggle automatic blink/breathing motion |
+| Eye Animation | Add looping eye motion |
 
 
 ## License
