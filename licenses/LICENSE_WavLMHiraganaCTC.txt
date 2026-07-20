@@ -1,15 +1,7 @@
-Hiragana LipSync bundled model
-
 Model: TylorShine/wavlm-base-plus-hiragana-ctc-v2
-Revision verified: cb9ad2c5e0b8722df153334349d85b3322b1cb91
 Author: TylorShine
 Source: https://huggingface.co/TylorShine/wavlm-base-plus-hiragana-ctc-v2
 License: Creative Commons Attribution-ShareAlike 3.0 Unported
-
-The model weights, tokenizers, and custom model code are separate from
-Hiragana LipSync source code. Preserve this attribution and the following
-license when distributing the model directory.
-Creative Commons Legal Code
 
 Attribution-ShareAlike 3.0 Unported
 
