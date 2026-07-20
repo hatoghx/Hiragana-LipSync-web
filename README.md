@@ -3,7 +3,10 @@
 A browser-based tool that generates lip-sync motion (.vmd) automatically from an audio file. No server required; all processing runs locally in the browser.
 
 Demo: https://ghx86l.github.io/Hiragana-LipSync-web/
-<br>(note: Processing may take some time)
+<br>* Processing may take some time.
+<br>* Opening this site multiple times may cause loading issues.
+<img width="737" height="849" alt="image" src="https://github.com/user-attachments/assets/e1f1f1b9-2f49-4651-a42b-a3e3de0b9bd6" />
+
 
 ## Features
 
@@ -12,6 +15,7 @@ Demo: https://ghx86l.github.io/Hiragana-LipSync-web/
 - WebGPU support with automatic fallback to WASM
 - UI available in Japanese / Chinese / English
 - Model inference runs entirely in the browser; audio is never sent to a server
+
 
 ## Usage
 
@@ -22,6 +26,7 @@ Demo: https://ghx86l.github.io/Hiragana-LipSync-web/
 
 ## Advanced Settings
 
+
 | Setting | Description |
 |---|---|
 | Mouth Openness | Per-vowel morph scale adjustment |
@@ -29,6 +34,7 @@ Demo: https://ghx86l.github.io/Hiragana-LipSync-web/
 | Max Shape Types per Frame | Maximum number of morphs active at once |
 | Output FPS | 10 / 15 / 30 |
 | Eye Animation | Toggle automatic blink/breathing motion |
+
 
 ## License
 
