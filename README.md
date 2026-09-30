@@ -1,5 +1,8 @@
 # Hiragana LipSync for web
 
+> [!WARNING]
+> Development and support for the web version of this tool have ended.
+
 A browser-based tool that generates lip-sync motion (.vmd) automatically from an audio file. No server required; all processing runs locally in the browser.
 
 Demo: https://ghx86l.github.io/Hiragana-LipSync-web/
